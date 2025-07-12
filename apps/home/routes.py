@@ -1933,63 +1933,60 @@ def profile():
 def client_map():
     """
     Renders a map displaying clients based on their GPS coordinates.
-    Temporarily uses hardcoded data for demonstration.
     """
-
-    # --- HARDCODED CLIENT LOCATIONS FOR PANZI, BUKAVU ---
-    # These are example coordinates around the Panzi hospital area in Bukavu.
-    # I've slightly varied them to show multiple markers.
+    # Replace hardcoded_client_locations with actual client data from DB
+    # For now, keeping it for demonstration as you did previously
     hardcoded_client_locations = [
         {
-            "id": 101,
-            "name": "Client A (Panzi)",
-            "lat": -2.5180,  # Near Panzi Hospital
-            "lng": 29.2150,
-            "address": "Avenue Ndendere, Panzi",
-            "phone_airtel": "+243 851234567",
+            "name": "Client A",
+            "address": "123 Main St, Panzi",
+            "lat": -2.5300,
+            "lng": 28.8550,
+            "phone_airtel": "0991234567",
         },
         {
-            "id": 102,
-            "name": "Client B (Panzi)",
-            "lat": -2.5195,  # Slightly south
-            "lng": 29.2165,
-            "address": "Rue du Marché, Panzi",
-            "phone_airtel": "+243 857654321",
+            "name": "Client B",
+            "address": "456 Oak Ave, Panzi",
+            "lat": -2.5450,
+            "lng": 28.8650,
+            "phone_airtel": "0997654321",
         },
         {
-            "id": 103,
-            "name": "Client C (Panzi)",
-            "lat": -2.5170,  # Slightly north-east
-            "lng": 29.2130,
-            "address": "Route de Cyangugu, Panzi",
-            "phone_airtel": "+243 859876543",
+            "name": "Client C",
+            "address": "789 Pine Rd, Panzi",
+            "lat": -2.5420,
+            "lng": 28.8600,
+            "phone_airtel": "0991122334",
         },
-        {
-            "id": 104,
-            "name": "Client D (Panzi)",
-            "lat": -2.5200,  # Further south
-            "lng": 29.2140,
-            "address": "Quartier Lumumba, Panzi",
-            "phone_airtel": "+243 851122334",
-        },
+        # Add more clients with coordinates within or around Panzi
     ]
 
     client_locations = hardcoded_client_locations
 
-    # Default center for Panzi, Bukavu (more specific than just Bukavu city center)
-    default_center_lat = -2.5185  # Latitude of Panzi area
-    default_center_lng = 29.2145  # Longitude of Panzi area
+    # Set default center specifically for Panzi Quarter
+    # These coordinates are derived from the OpenStreetMap image you provided for Panzi.
+    default_center_lat = -2.540219
+    default_center_lng = 28.8594693
 
-    # If you still want to calculate average for hardcoded clients (optional)
+    # Your logic for calculating average coordinates will override these
+    # if client_locations is not empty.
+    # If you want Panzi to ALWAYS be the initial center, remove or modify this block
+    # or set the zoom level to show Panzi even if fitBounds changes it.
     if client_locations:
+        # You might want to remove this calculation if you want a fixed Panzi center
+        # and only use fitBounds to show all markers *within* that context
         avg_lat = sum(loc["lat"] for loc in client_locations) / len(client_locations)
         avg_lng = sum(loc["lng"] for loc in client_locations) / len(client_locations)
-        default_center_lat = avg_lat
-        default_center_lng = avg_lng
-        # You might want to adjust the default_center_lat/lng slightly
-        # if you want the initial view to be slightly offset from the exact average
-        # to ensure all markers are immediately visible without fitting bounds.
-        # However, fitBounds usually handles this well.
+        # Consider a scenario where all clients are in one corner,
+        # the average might not be the visual center of Panzi.
+        # So, if clients are sparse, relying on Panzi's center is better for initial load.
+        # If your clients truly define the area of interest, keep this.
+        # For a fixed "Panzi quarter" view, you might want to stick to the hardcoded Panzi center.
+        # For this example, let's prioritize Panzi's fixed center unless there are clients.
+        if True:  # You can add a condition here, e.g., if you only have a few clients
+            default_center_lat = avg_lat
+            default_center_lng = avg_lng
+        # You can add a check if avg_lat/lng are far from Panzi, then maybe reset to Panzi's center
 
     return render_template(
         "home/client_map.html",
