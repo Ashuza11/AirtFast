@@ -340,10 +340,23 @@ def _consume_wholesale_sale_items(*, business, items):
     return prepared_items, sum(subtotals, Decimal("0"))
 
 
+def wholesale_sale_has_active_payment(sale: Sale) -> bool:
+    """Return whether an active receipt or allocation is linked to the sale."""
+    if as_decimal(sale.cash_paid) > 0:
+        return True
+    if PaymentEvent.query.filter_by(
+        source_sale_id=sale.id, status=TransactionStatus.ACTIVE
+    ).first() is not None:
+        return True
+    return any(
+        inflow.status == TransactionStatus.ACTIVE for inflow in sale.cash_inflows
+    )
+
+
 def replace_unpaid_wholesale_sale(
     *, sale, business, updated_by, client, sale_date, items
 ):
-    """Replace an unpaid wholesale invoice while preserving its audit identity."""
+    """Correct a wholesale invoice while preserving receipts and audit identity."""
     _validate_wholesale_sale_access(
         business=business, sold_by=updated_by, client=client
     )
@@ -351,22 +364,33 @@ def replace_unpaid_wholesale_sale(
         raise PermissionError("Cette vente appartient à un autre mode.")
     if sale.status != TransactionStatus.ACTIVE:
         raise ValueError("Une vente annulée ne peut pas être modifiée.")
-    has_source_payment = PaymentEvent.query.filter_by(
-        source_sale_id=sale.id, status=TransactionStatus.ACTIVE
-    ).first() is not None
-    if sale.cash_paid > 0 or has_source_payment or any(
-        inflow.status == TransactionStatus.ACTIVE for inflow in sale.cash_inflows
-    ):
+    has_active_payment = wholesale_sale_has_active_payment(sale)
+    if has_active_payment and client.id != sale.client_id:
         raise ValueError(
             user_message(
-                "Cette vente est liée à un paiement actif.",
-                "Ouvrez Dettes, annulez le reçu concerné, puis réessayez.",
+                "Le client ne peut pas être changé après un paiement.",
+                "Le reçu reste lié à ce client. Corrigez seulement la vente.",
+            )
+        )
+    if has_active_payment and sale_date != sale.sale_date:
+        raise ValueError(
+            user_message(
+                "La date ne peut pas être changée après un paiement.",
+                "Le reçu conserve la date de cette vente.",
             )
         )
 
     prepared_inputs = _prepare_wholesale_sale_items(
         business=business, items=items
     )
+    corrected_total = sum(
+        (item["subtotal"] for item in prepared_inputs), Decimal("0")
+    )
+    if has_active_payment and corrected_total < as_decimal(sale.cash_paid):
+        raise ValueError(user_message(
+            "Le nouveau total est inférieur au montant déjà payé.",
+            "Corrigez d'abord le paiement, puis modifiez la vente.",
+        ))
     old_items_by_network = {item.network: item for item in sale.sale_items}
     inventory_unchanged = (
         len(old_items_by_network) == len(prepared_inputs)
@@ -389,9 +413,7 @@ def replace_unpaid_wholesale_sale(
         sale.client = client
         sale.sale_date = sale_date
         sale.total_amount_due = total
-        sale.cash_paid = Decimal("0")
-        sale.initial_cash_paid = Decimal("0")
-        sale.debt_amount = total
+        sale.debt_amount = total - as_decimal(sale.cash_paid)
         return
 
     affected_networks = {item.network for item in sale.sale_items}
@@ -415,7 +437,11 @@ def replace_unpaid_wholesale_sale(
                 (
                     f"Un achat {later_purchase.network.value.capitalize()} "
                     f"#{later_purchase.id} a été enregistré ensuite. "
-                    "Le prix et le client restent modifiables."
+                    + (
+                        "Le prix reste modifiable."
+                        if has_active_payment
+                        else "Le prix et le client restent modifiables."
+                    )
                 ),
             )
         )
@@ -442,9 +468,7 @@ def replace_unpaid_wholesale_sale(
     sale.client = client
     sale.sale_date = sale_date
     sale.total_amount_due = total
-    sale.cash_paid = Decimal("0")
-    sale.initial_cash_paid = Decimal("0")
-    sale.debt_amount = total
+    sale.debt_amount = total - as_decimal(sale.cash_paid)
     sale.sale_items.extend(prepared_items)
 
 

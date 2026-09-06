@@ -950,23 +950,62 @@ def test_unpaid_wholesale_sale_can_be_corrected(session):
     ).one().balance == 1700
 
 
-def test_paid_wholesale_sale_cannot_be_edited(session):
+def test_paid_wholesale_sale_can_be_edited_without_changing_receipt(session):
     owner, business, retailer, preset = setup_wholesale(session, suffix=54)
     sale = record_wholesale_sale(
         business=business, sold_by=owner, client=retailer,
         network=NetworkType.AIRTEL, quantity=500, cash_received=Decimal("1"),
         sale_date=date.today(), preset=preset,
     )
+    session.flush()
+    payment = PaymentEvent.query.filter_by(source_sale_id=sale.id).one()
 
-    with pytest.raises(ValueError, match="paiement"):
+    replace_unpaid_wholesale_sale(
+        sale=sale, business=business, updated_by=owner, client=retailer,
+        sale_date=date.today(), items=[{
+            "network": NetworkType.AIRTEL,
+            "quantity": 300,
+            "custom_unit_price": Decimal("0.01000"),
+        }],
+    )
+    session.flush()
+
+    assert sale.total_amount_due == Decimal("3.00")
+    assert sale.cash_paid == Decimal("1.00")
+    assert sale.initial_cash_paid == Decimal("1.00")
+    assert sale.debt_amount == Decimal("2.00")
+    assert payment.status == TransactionStatus.ACTIVE
+    assert payment.amount == Decimal("1.00")
+    assert payment.allocations[0].sale_id == sale.id
+    assert payment.allocations[0].amount == Decimal("1.00")
+
+
+def test_paid_wholesale_sale_rejects_total_below_applied_payment(session):
+    owner, business, retailer, preset = setup_wholesale(session, suffix=542)
+    sale = record_wholesale_sale(
+        business=business, sold_by=owner, client=retailer,
+        network=NetworkType.AIRTEL, quantity=500, cash_received=Decimal("1"),
+        sale_date=date.today(), preset=preset,
+    )
+    session.flush()
+    stock = Stock.query.filter_by(
+        business_id=business.id, network=NetworkType.AIRTEL
+    ).one()
+    original_stock = (stock.balance, stock.inventory_value)
+
+    with pytest.raises(ValueError, match="inférieur au montant déjà payé"):
         replace_unpaid_wholesale_sale(
             sale=sale, business=business, updated_by=owner, client=retailer,
             sale_date=date.today(), items=[{
                 "network": NetworkType.AIRTEL,
-                "quantity": 300,
+                "quantity": 50,
                 "custom_unit_price": Decimal("0.01000"),
             }],
         )
+
+    assert sale.total_amount_due == Decimal("4.70")
+    assert sale.cash_paid == Decimal("1.00")
+    assert (stock.balance, stock.inventory_value) == original_stock
 
 
 def test_wholesale_sales_page_explains_active_and_redirected_payments(app, session):
@@ -1000,6 +1039,7 @@ def test_wholesale_sales_page_explains_active_and_redirected_payments(app, sessi
     assert b"$1.00 appliqu\xc3\xa9 aux anciennes dettes" in page.data
     assert b"$1.00 re\xc3\xa7u via d'autres paiements" in page.data
     assert b"Voir les paiements" in page.data
+    assert f"/businesses/wholesale/sales/{second_sale.id}/edit".encode() in page.data
     assert b"Paiement \xc3\xa0 annuler d'abord" not in page.data
 
 
@@ -1025,7 +1065,7 @@ def test_wholesale_sales_page_keeps_legacy_paid_sale_protected(app, session):
     assert page.status_code == 200
     assert b"Paiement ancien" in page.data
     assert b"$1.00 pay\xc3\xa9 via un ancien re\xc3\xa7u sans d\xc3\xa9tail" in page.data
-    assert f"/businesses/wholesale/sales/{sale.id}/edit".encode() not in page.data
+    assert f"/businesses/wholesale/sales/{sale.id}/edit".encode() in page.data
 
 
 def test_wholesale_sale_edit_route_updates_invoice(app, session):

@@ -140,6 +140,7 @@ from apps.sales import (
     replace_unpaid_wholesale_sale,
     reverse_unpaid_sale,
     reverse_unpaid_wholesale_sale,
+    wholesale_sale_has_active_payment,
 )
 from apps.wholesale_reports import build_wholesale_daily_report
 from apps.wholesale_cashbook import (
@@ -1098,6 +1099,7 @@ def wholesale_sale_edit(sale_id):
     if business.owner_user_id != current_user.id:
         abort(403)
     sale = Sale.query.filter_by(id=sale_id, business_id=business.id).first_or_404()
+    editing_sale_has_payment = wholesale_sale_has_active_payment(sale)
     clients = Client.query.filter_by(
         business_id=business.id, is_active=True
     ).order_by(Client.name).all()
@@ -1156,6 +1158,7 @@ def wholesale_sale_edit(sale_id):
         "main/wholesale_sales.html",
         business=business,
         editing_sale=sale,
+        editing_sale_has_payment=editing_sale_has_payment,
         form=form,
         sale_groups=[],
         daily_report=build_wholesale_daily_report(

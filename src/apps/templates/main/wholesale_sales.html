@@ -3,7 +3,9 @@
   {% if sale.status.value == 'reversed' %}
     <span class="badge badge-danger">Annulée</span>
     <small class="d-block mt-1 text-muted">{{ sale.reversal_reason }}</small>
-  {% elif payment.has_blocking_payment %}
+  {% else %}
+    <a class="btn btn-sm btn-primary mb-2" href="{{ url_for('main_bp.wholesale_sale_edit', sale_id=sale.id) }}">Modifier</a>
+  {% if payment.has_blocking_payment %}
     {% if payment.blocking_payment_count > 0 %}<span class="badge badge-warning">{{ payment.blocking_payment_count }} paiement{{ 's' if payment.blocking_payment_count != 1 }} lié{{ 's' if payment.blocking_payment_count != 1 }}</span>{% else %}<span class="badge badge-warning">Paiement ancien</span>{% endif %}
     {% if payment.received_from_sale > 0 %}<small class="d-block mt-1 text-muted">${{ "{:.2f}".format(payment.received_from_sale) }} reçu depuis cette vente.</small>{% endif %}
     {% if payment.redirected_to_other_sales > 0 %}<small class="d-block text-muted">${{ "{:.2f}".format(payment.redirected_to_other_sales) }} appliqué aux anciennes dettes.</small>{% endif %}
@@ -19,7 +21,6 @@
       <small class="d-block text-muted">Contactez l'administrateur pour corriger cette ancienne vente.</small>
     {% endif %}
   {% else %}
-    <a class="btn btn-sm btn-primary mb-2" href="{{ url_for('main_bp.wholesale_sale_edit', sale_id=sale.id) }}">Modifier</a>
     <form method="post" action="{{ url_for('main_bp.reverse_wholesale_sale_route', sale_id=sale.id) }}" onsubmit="return confirm('Annuler cette vente remettra les unités en stock et annulera sa dette. Continuer ?');">
       {{ reversal_form.csrf_token }}
       <div class="input-group input-group-sm">
@@ -27,6 +28,7 @@
         <div class="input-group-append"><button class="btn btn-outline-danger" type="submit">Annuler vente</button></div>
       </div>
     </form>
+  {% endif %}
   {% endif %}
 {% endmacro %}
 {% block title %}Ventes grossiste{% endblock %}
@@ -67,8 +69,17 @@
     <div class="col-lg-5 mb-4"><div class="card shadow"><div class="card-header"><h3 class="mb-0">{{ 'Modifier la vente' if editing_sale else 'Nouvelle vente' }}</h3></div><div class="card-body">
       <form method="post">
         {{ form.hidden_tag() }}
-        <div class="form-group">{{ form.client_id.label }}{{ form.client_id(class="form-control", id="saleClient") }}</div>
+        <div class="form-group">
+          {{ form.client_id.label }}
+          {% if editing_sale_has_payment %}
+            {{ form.client_id(class="form-control", id="saleClient", disabled=True) }}
+            <input type="hidden" name="client_id" value="{{ form.client_id.data }}">
+          {% else %}
+            {{ form.client_id(class="form-control", id="saleClient") }}
+          {% endif %}
+        </div>
         <div class="form-group" id="newClientGroup">{{ form.new_client_name.label }}{{ form.new_client_name(class="form-control") }}</div>
+        {% if editing_sale_has_payment %}<div class="alert alert-info py-2 small">Le paiement reste inchangé. Pour corriger le montant reçu, utilisez « Corriger paiement ».</div>{% endif %}
         <div id="wholesaleSaleItems">
           {% for item in form.sale_items %}
           <div class="border rounded p-3 mb-3 wholesale-sale-item">
@@ -87,7 +98,15 @@
           {% endfor %}
         </div>
         <button type="button" class="btn btn-sm btn-outline-primary mb-3" id="addWholesaleSaleItem">Ajouter</button>
-        <div class="form-group">{{ form.sale_date.label }}{{ form.sale_date(class="form-control") }}</div>
+        <div class="form-group">
+          {{ form.sale_date.label }}
+          {% if editing_sale_has_payment %}
+            {{ form.sale_date(class="form-control", disabled=True) }}
+            <input type="hidden" name="sale_date" value="{{ form.sale_date.data.isoformat() }}">
+          {% else %}
+            {{ form.sale_date(class="form-control") }}
+          {% endif %}
+        </div>
         {% if not editing_sale %}<div class="form-group">{{ form.cash_received.label }}{{ form.cash_received(class="form-control") }}<small class="text-muted">Les anciennes dettes de ce détaillant sont payées en premier.</small></div>{% endif %}
         {% for field, errors in form.errors.items() %}{% for error in errors %}<div class="text-danger small">{{ error }}</div>{% endfor %}{% endfor %}
         <div class="alert alert-light border">Total estimé: <strong id="saleTotalPreview">—</strong></div>
