@@ -137,9 +137,11 @@ from apps.purchases import (
 from apps.sales import (
     build_wholesale_sale_groups,
     record_wholesale_sale,
+    replace_retail_sale,
     replace_unpaid_wholesale_sale,
     reverse_unpaid_sale,
     reverse_unpaid_wholesale_sale,
+    sale_has_active_payment,
     wholesale_sale_has_active_payment,
 )
 from apps.wholesale_reports import build_wholesale_daily_report
@@ -2818,11 +2820,124 @@ def update_sale_cash(sale_id):
 def edit_sale(sale_id):
     sale = db.get_or_404(Sale, sale_id)
     ensure_access(sale)
-    flash(
-        "Annulez la vente, puis saisissez la correction.",
-        "warning",
+    business = get_current_business()
+    if business is None or business.business_type != BusinessType.RETAIL:
+        abort(404)
+
+    form = SaleForm()
+    clients = Client.query.filter_by(
+        business_id=business.id, is_active=True
+    ).order_by(Client.name).all()
+    form.existing_client_id.choices = [
+        ("", "Sélectionnez un client existant"),
+        *((str(client.id), client.name) for client in clients),
+    ]
+    adhoc_sales = Sale.query.filter(
+        Sale.business_id == business.id,
+        Sale.client_id.is_(None),
+        Sale.adhoc_customer_key.isnot(None),
+        Sale.status == TransactionStatus.ACTIVE,
+    ).order_by(Sale.created_at.desc()).all()
+    adhoc_groups = {}
+    for prior_sale in adhoc_sales:
+        group = adhoc_groups.setdefault(prior_sale.adhoc_customer_key, {
+            "name": prior_sale.client_display_name,
+            "debt": Decimal("0.00"),
+        })
+        group["debt"] += prior_sale.debt_amount
+    form.adhoc_customer_key.choices = [("", "Nouvelle personne")]
+    form.adhoc_customer_key.choices.extend(
+        (key, f"Même client : {data['name']} — dette {data['debt']:,.2f} FC")
+        for key, data in adhoc_groups.items()
     )
-    return redirect(url_for("main_bp.delete_sale", sale_id=sale.id))
+
+    has_active_payment = sale_has_active_payment(sale)
+    if request.method == "GET":
+        if sale.client is not None:
+            form.client_choice.data = "existing"
+            form.existing_client_id.data = str(sale.client_id)
+        else:
+            form.client_choice.data = "new"
+            form.adhoc_customer_key.data = sale.adhoc_customer_key
+            form.new_client_name.data = sale.client_name_adhoc
+        while form.sale_items:
+            form.sale_items.pop_entry()
+        for item in sale.sale_items:
+            item_form = form.sale_items.append_entry()
+            item_form.network.data = item.network.name
+            item_form.quantity.data = item.quantity
+            item_form.price_per_unit_applied.data = item.price_per_unit_applied
+        form.sale_date.data = sale.sale_date
+
+    if form.validate_on_submit():
+        try:
+            selected_client = None
+            adhoc_name = None
+            adhoc_key = None
+            if form.client_choice.data == "existing":
+                selected_client = Client.query.filter_by(
+                    id=int(form.existing_client_id.data),
+                    business_id=business.id,
+                    is_active=True,
+                ).first()
+                if selected_client is None:
+                    raise ValueError("Sélectionnez un client disponible.")
+            else:
+                adhoc_key = (form.adhoc_customer_key.data or "").strip()
+                if adhoc_key:
+                    prior_identity = Sale.query.filter_by(
+                        business_id=business.id,
+                        client_id=None,
+                        adhoc_customer_key=adhoc_key,
+                        status=TransactionStatus.ACTIVE,
+                    ).order_by(Sale.created_at.desc()).first()
+                    if prior_identity is None:
+                        raise ValueError("Sélectionnez de nouveau le client occasionnel.")
+                    adhoc_name = prior_identity.client_display_name
+                else:
+                    adhoc_name = (form.new_client_name.data or "").strip()
+                    adhoc_key = uuid4().hex
+
+            replace_retail_sale(
+                sale=sale,
+                business=business,
+                updated_by=current_user,
+                client=selected_client,
+                client_name_adhoc=adhoc_name,
+                adhoc_customer_key=adhoc_key,
+                sale_date=form.sale_date.data,
+                items=[{
+                    "network": entry.form.network.data,
+                    "quantity": entry.form.quantity.data,
+                    "price_per_unit_applied": entry.form.price_per_unit_applied.data,
+                } for entry in form.sale_items.entries],
+            )
+            db.session.commit()
+            flash("Vente modifiée.", "success")
+            return redirect(url_for(
+                "main_bp.vente_stock", date=sale.sale_date.isoformat()
+            ))
+        except (ValueError, PermissionError) as error:
+            db.session.rollback()
+            flash(str(error), "danger")
+        except Exception as error:
+            db.session.rollback()
+            current_app.logger.error(
+                f"Error editing retail sale {sale_id}: {error}", exc_info=True
+            )
+            flash(user_message(
+                "La vente n'a pas pu être modifiée.",
+                "Vérifiez les informations puis réessayez.",
+            ), "danger")
+
+    return render_template(
+        "main/vente_stock.html",
+        form=form,
+        editing_sale=sale,
+        editing_sale_has_payment=has_active_payment,
+        segment="stock",
+        sub_segment="vente_stock",
+    )
 
 
 @bp.route("/delete_sale/<int:sale_id>", methods=["GET", "POST"])
@@ -2872,7 +2987,7 @@ def delete_sale(sale_id):
         "main/confirm_delete_sale.html",
         sale=sale,
         confirm_form=confirm_form,
-        page_title="Confirmer Suppression Vente",
+        page_title="Confirmer l'annulation",
         segment="stock",
         sub_segment="vente_stock",
     )

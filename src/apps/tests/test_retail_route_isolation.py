@@ -1,7 +1,9 @@
 from datetime import date
 from decimal import Decimal
 
-from apps.businesses import create_business
+from flask import g
+
+from apps.businesses import add_stockeur, create_business
 from apps.models import (
     BusinessApprovalStatus,
     BusinessMembership,
@@ -15,6 +17,7 @@ from apps.models import (
     PaymentEvent,
     RoleType,
     Sale,
+    SaleItemHistory,
     Stock,
     TransactionStatus,
     User,
@@ -99,6 +102,7 @@ def setup_ledgers(session):
 
 
 def login_to_business(client, owner, business):
+    g.pop("_login_user", None)
     with client.session_transaction() as browser_session:
         browser_session["_user_id"] = str(owner.id)
         browser_session["_fresh"] = True
@@ -188,10 +192,30 @@ def test_new_retail_records_receive_active_business_key(app, session):
     assert created_sale.business_id == retail.id
 
     edit_response = client.get(f"/edit_sale/{created_sale.id}")
-    assert edit_response.status_code == 302
-    assert edit_response.headers["Location"].endswith(
-        f"/delete_sale/{created_sale.id}"
+    assert edit_response.status_code == 200
+    assert b"Modifier la vente" in edit_response.data
+    assert b"Confirmer" not in edit_response.data
+
+    update_response = client.post(
+        f"/edit_sale/{created_sale.id}",
+        data={
+            "client_choice": "existing",
+            "existing_client_id": str(retail_client.id),
+            "sale_items-0-network": NetworkType.AIRTEL.name,
+            "sale_items-0-quantity": "12",
+            "sale_items-0-price_per_unit_applied": "25",
+            "sale_date": date.today().isoformat(),
+            "submit": "Enregistrer",
+        },
     )
+    assert update_response.status_code == 302
+    session.refresh(created_sale)
+    assert created_sale.total_amount_due == Decimal("300")
+    assert created_sale.debt_amount == Decimal("300")
+    assert created_sale.sale_items[0].quantity == 12
+    history = SaleItemHistory.query.filter_by(sale_id=created_sale.id).one()
+    assert history.quantity == 10
+
     cancel_response = client.post(
         f"/delete_sale/{created_sale.id}",
         data={"reason": "Quantité incorrecte"},
@@ -205,6 +229,151 @@ def test_new_retail_records_receive_active_business_key(app, session):
     assert created_sale.reversal_reason == "Quantité incorrecte"
     assert stock.balance == Decimal("100")
     assert Sale.query.filter_by(id=created_sale.id).count() == 1
+
+
+def test_stockeur_can_modify_retail_sale_without_cancelling_it(app, session):
+    owner, retail, _, retail_client, _ = setup_ledgers(session)
+    stockeur = User(
+        username="retail-editor",
+        phone="+243810009904",
+        vendeur_id=owner.id,
+        role=RoleType.STOCKEUR,
+    )
+    stockeur.set_password("safe-password")
+    session.add_all([
+        stockeur,
+        Stock(
+            vendeur_id=owner.id,
+            business_id=retail.id,
+            network=NetworkType.AIRTEL,
+            balance=Decimal("100"),
+            buying_price_per_unit=Decimal("20"),
+            selling_price_per_unit=Decimal("25"),
+            inventory_value=Decimal("2000"),
+            average_cost_per_unit=Decimal("20"),
+        ),
+    ])
+    session.flush()
+    add_stockeur(business=retail, stockeur=stockeur)
+    session.commit()
+
+    browser = app.test_client()
+    login_to_business(browser, owner, retail)
+    create_response = browser.post(
+        "/vente_stock",
+        data={
+            "client_choice": "existing",
+            "existing_client_id": str(retail_client.id),
+            "sale_items-0-network": NetworkType.AIRTEL.name,
+            "sale_items-0-quantity": "10",
+            "sale_items-0-price_per_unit_applied": "25",
+            "cash_paid": "0",
+            "sale_date": date.today().isoformat(),
+            "submit": "Vendre",
+        },
+    )
+    assert create_response.status_code == 302
+    sale = Sale.query.filter_by(
+        client_id=retail_client.id, total_amount_due=Decimal("250")
+    ).one()
+
+    stockeur_browser = app.test_client()
+    login_to_business(stockeur_browser, stockeur, retail)
+    page = stockeur_browser.get("/vente_stock")
+    assert page.status_code == 200
+    assert b'content="retail-editor"' in page.data
+    assert f'/edit_sale/{sale.id}'.encode() in page.data
+    assert b">Modifier<" in page.data
+
+    response = stockeur_browser.post(
+        f"/edit_sale/{sale.id}",
+        data={
+            "client_choice": "existing",
+            "existing_client_id": str(retail_client.id),
+            "sale_items-0-network": NetworkType.AIRTEL.name,
+            "sale_items-0-quantity": "10",
+            "sale_items-0-price_per_unit_applied": "30",
+            "sale_date": date.today().isoformat(),
+            "submit": "Enregistrer",
+        },
+    )
+
+    assert response.status_code == 302
+    session.refresh(sale)
+    assert sale.status == TransactionStatus.ACTIVE
+    assert sale.total_amount_due == Decimal("300")
+    assert sale.sale_items[0].price_per_unit_applied == Decimal("30")
+    histories = SaleItemHistory.query.filter_by(sale_id=sale.id).all()
+    assert [
+        (history.changed_by_id, history.action) for history in histories
+    ] == [(stockeur.id, "edit")]
+
+
+def test_retail_sale_edit_preserves_existing_payment(app, session):
+    owner, retail, _, _, _ = setup_ledgers(session)
+    paid_client = Client(
+        name="Paid retail client",
+        vendeur_id=owner.id,
+        business_id=retail.id,
+    )
+    session.add_all([
+        paid_client,
+        Stock(
+            vendeur_id=owner.id,
+            business_id=retail.id,
+            network=NetworkType.AIRTEL,
+            balance=Decimal("100"),
+            buying_price_per_unit=Decimal("20"),
+            selling_price_per_unit=Decimal("25"),
+            inventory_value=Decimal("2000"),
+            average_cost_per_unit=Decimal("20"),
+        ),
+    ])
+    session.commit()
+    browser = app.test_client()
+    login_to_business(browser, owner, retail)
+    browser.post(
+        "/vente_stock",
+        data={
+            "client_choice": "existing",
+            "existing_client_id": str(paid_client.id),
+            "sale_items-0-network": NetworkType.AIRTEL.name,
+            "sale_items-0-quantity": "10",
+            "sale_items-0-price_per_unit_applied": "25",
+            "cash_paid": "100",
+            "sale_date": date.today().isoformat(),
+            "submit": "Vendre",
+        },
+    )
+    sale = Sale.query.filter_by(client_id=paid_client.id).one()
+    payment = PaymentEvent.query.filter_by(source_sale_id=sale.id).one()
+    original_cost = sale.sale_items[0].cost_total
+
+    response = browser.post(
+        f"/edit_sale/{sale.id}",
+        data={
+            "client_choice": "existing",
+            "existing_client_id": str(paid_client.id),
+            "sale_items-0-network": NetworkType.AIRTEL.name,
+            "sale_items-0-quantity": "10",
+            "sale_items-0-price_per_unit_applied": "30",
+            "sale_date": date.today().isoformat(),
+            "submit": "Enregistrer",
+        },
+    )
+
+    assert response.status_code == 302
+    session.refresh(sale)
+    session.refresh(payment)
+    assert sale.total_amount_due == Decimal("300")
+    assert sale.cash_paid == Decimal("100")
+    assert sale.initial_cash_paid == Decimal("100")
+    assert sale.debt_amount == Decimal("200")
+    assert sale.sale_items[0].cost_total == original_cost
+    assert payment.status == TransactionStatus.ACTIVE
+    assert payment.amount == Decimal("100")
+    assert payment.allocations[0].sale_id == sale.id
+    assert payment.allocations[0].amount == Decimal("100")
 
 
 def test_retail_debt_payment_cannot_reach_wholesale_debt(app, session):

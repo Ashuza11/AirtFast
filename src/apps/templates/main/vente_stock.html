@@ -1,12 +1,12 @@
 {% extends "layouts/base.html" %}
 {% import "includes/_filters.html" as filters %}
 
-{% block title %} Vente Stock {% endblock %}
+{% block title %}{% if editing_sale %}Modifier vente{% else %}Vente Stock{% endif %}{% endblock %}
 
 {% block content %}
 
     {# Render the Page Header #}
-    {% set page_title = 'Gestion Ventes' %}
+    {% set page_title = 'Modifier la vente' if editing_sale else 'Gestion Ventes' %}
     {% set breadcrumb_items = [
         {'text': 'Ventes', 'url': url_for('main_bp.vente_stock')},
         {'text': 'Nouvelle Vente', 'url': url_for('main_bp.vente_stock')}
@@ -20,12 +20,12 @@
                     <div class="card-header">
                         <div class="row align-items-center">
                             <div class="col-8">
-                                <h3 class="mb-0">Enregistrer une Nouvelle Vente</h3>
+                                <h3 class="mb-0">{% if editing_sale %}Modifier la vente #{{ editing_sale.id }}{% else %}Enregistrer une Nouvelle Vente{% endif %}</h3>
                             </div>
                         </div>
                     </div>
                     <div class="card-body">
-                        <form method="post" action="{{ url_for('main_bp.vente_stock') }}">
+                        <form method="post" action="{{ url_for('main_bp.edit_sale', sale_id=editing_sale.id) if editing_sale else url_for('main_bp.vente_stock') }}">
                             {{ form.hidden_tag() }}
 
                             <h6 class="heading-small text-muted mb-4">Informations sur le Client</h6>
@@ -133,18 +133,26 @@
                                     </div>
                                     <div class="col-md-6">
                                         <div class="form-group{% if form.cash_paid.errors %} has-danger{% endif %}">
-                                            {{ form.cash_paid.label(class="form-control-label") }}
-                                            {{ form.cash_paid(class="form-control" + (" is-invalid" if form.cash_paid.errors else "")) }}
-                                            {% for error in form.cash_paid.errors %}
-                                                <div class="invalid-feedback d-block">{{ error }}</div>
-                                            {% endfor %}
+                                            {% if editing_sale %}
+                                                <label class="form-control-label">Paiement déjà enregistré</label>
+                                                <input class="form-control" value="{{ '{:,.2f}'.format(editing_sale.cash_paid) }} FC" disabled>
+                                                <small class="form-text text-muted">Le paiement ne change pas ici. Utilisez le bouton du paiement si son montant est incorrect.</small>
+                                            {% else %}
+                                                {{ form.cash_paid.label(class="form-control-label") }}
+                                                {{ form.cash_paid(class="form-control" + (" is-invalid" if form.cash_paid.errors else "")) }}
+                                                {% for error in form.cash_paid.errors %}
+                                                    <div class="invalid-feedback d-block">{{ error }}</div>
+                                                {% endfor %}
+                                            {% endif %}
                                         </div>
                                     </div>
                                 </div>
+                                {% if editing_sale_has_payment %}<div class="alert alert-info py-2 small">Le client, la date et le paiement restent liés au reçu. Vous pouvez corriger les articles et les prix.</div>{% endif %}
                             </div>
 
-                            <div class="mt-3">
-                                {{ form.submit(class="btn btn-primary btn-block") }}
+                            <div class="d-flex flex-column flex-sm-row justify-content-end mt-3" style="gap:8px;">
+                                {% if editing_sale %}<a href="{{ url_for('main_bp.vente_stock', date=editing_sale.sale_date.isoformat()) }}" class="btn btn-secondary">Retour</a>{% endif %}
+                                {{ form.submit(class="btn btn-primary" + ("" if editing_sale else " btn-block"), value="Enregistrer" if editing_sale else "Vendre") }}
                             </div>
                         </form>
                     </div>
@@ -152,6 +160,7 @@
             </div>
         </div>
 
+        {% if not editing_sale %}
         {# Table for displaying sales #}
         <div class="row mt-5">
             <div class="col-xl-12">
@@ -231,7 +240,10 @@
                                                 </a>
                                                 <div class="dropdown-menu dropdown-menu-right dropdown-menu-arrow">
                                                     <a class="dropdown-item" href="{{ url_for('main_bp.view_sale_details', sale_id=sale.id) }}">Détails</a>
-                                                    {% if sale.status.value == 'active' %}<a class="dropdown-item text-danger" href="{{ url_for('main_bp.delete_sale', sale_id=sale.id) }}">Corriger</a>{% endif %}
+                                                    {% if sale.status.value == 'active' %}
+                                                        <a class="dropdown-item" href="{{ url_for('main_bp.edit_sale', sale_id=sale.id) }}">Modifier</a>
+                                                        <a class="dropdown-item text-danger" href="{{ url_for('main_bp.delete_sale', sale_id=sale.id) }}">Annuler</a>
+                                                    {% endif %}
                                                 </div>
                                             </div>
                                         </td>
@@ -249,6 +261,7 @@
                 </div>
             </div>
         </div>
+        {% endif %}
 
         {% include "includes/footer.html" %}
 
